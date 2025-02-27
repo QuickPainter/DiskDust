@@ -26,14 +26,21 @@ import sys
 
 # define data directories
 
-def get_data_version(file_type, archive,file_number,non_vla_freq_index_cutoff, lower_freq_cutoff=0, disk='MWC480'):
+def get_data_version(file_type, archive,file_number,non_vla_freq_index_cutoff,upper_freq_cutoff, disk='MWC480'):
     dir_name = '/Users/calebpainter/Downloads/Research/THESIS/data'
     image_files = os.listdir(dir_name + '/image')
 
     nu_, Snu_, eSnu_, grp_ = np.loadtxt(dir_name+f'/{disk}.spectrum.txt').T
 
+    spectrum_max = np.max(nu_)
+
     # non-VLA archival
-    non_vla = ascii.read(dir_name+'/MWC480.spec.txt')  
+    # non-VLA archival
+    if disk == 'MWC480':
+        non_vla = ascii.read(dir_name+'/MWC480.spec.txt')  
+    else:
+        non_vla = ascii.read(dir_name+f'/{disk}.SED.txt')  
+
     lambda_non_vla, snu_non_vla, snu_err_non_vla1, snu_err_non_vla2  = non_vla['col1'], non_vla['col2'], non_vla['col3'], non_vla['col4']
 
     snu_err_non_vla = np.sqrt(snu_err_non_vla1**2 + (snu_non_vla * snu_err_non_vla2)**2)
@@ -100,9 +107,13 @@ def get_data_version(file_type, archive,file_number,non_vla_freq_index_cutoff, l
 
         if archive == True:
 
-            mcmc_nu = np.array(list(mcmc_nu) + list(nu_non_vla)[:non_vla_freq_index_cutoff])
-            mcmc_Snu = np.array(list(mcmc_Snu) + list(snu_non_vla*(10**3))[:non_vla_freq_index_cutoff])
-            mcmc_Snu_err = np.array(list(mcmc_Snu_err) + list(snu_err_non_vla*(10**3))[:non_vla_freq_index_cutoff])
+            non_vla_freq_index_cutoff_lower = np.where(nu_non_vla < upper_freq_cutoff)[0][0] 
+
+            non_vla_freq_index_cutoff2 = np.where(nu_non_vla > spectrum_max)[0][-1] +1
+
+            mcmc_nu = np.array(list(mcmc_nu) + list(nu_non_vla)[non_vla_freq_index_cutoff_lower:non_vla_freq_index_cutoff2])
+            mcmc_Snu = np.array(list(mcmc_Snu) + list(snu_non_vla*(10**3))[non_vla_freq_index_cutoff_lower:non_vla_freq_index_cutoff2])
+            mcmc_Snu_err = np.array(list(mcmc_Snu_err) + list(snu_err_non_vla*(10**3))[non_vla_freq_index_cutoff_lower:non_vla_freq_index_cutoff2])
 
 
             ## convert to microjansky
@@ -119,7 +130,7 @@ def get_data_version(file_type, archive,file_number,non_vla_freq_index_cutoff, l
 
     indices_17Ghz = np.where(mcmc_nu < 17)[0] 
     indices_50Ghz = np.where((mcmc_nu < 50) &(mcmc_nu > 17) )[0] 
-    indices_100Ghz = np.where(mcmc_nu > 50)[0] 
+    indices_100Ghz = np.where((mcmc_nu > 50) & (mcmc_nu <= spectrum_max) )[0] 
 
     flux_scale_errors[indices_17Ghz] = .03
     flux_scale_errors[indices_50Ghz] = .05
@@ -159,19 +170,24 @@ def get_data_version(file_type, archive,file_number,non_vla_freq_index_cutoff, l
     flux_scale_errors = flux_scale_errors[sorted_indices]
     flux_scale_errors_scaled = flux_scale_errors_scaled[sorted_indices]
 
-    try:
-        lower_index_cutoff = np.where(mcmc_nu < lower_freq_cutoff)[-1][-1]
-    except:
-        lower_index_cutoff = 0
+    ## incorporate the flux error into the one that the MCMC will run on
+    total_flux_error = np.sqrt(mcmc_Snu_err**2 +flux_scale_errors_scaled**2)
 
-    print(lower_index_cutoff)
-    mcmc_nu = mcmc_nu[lower_index_cutoff:]
-    mcmc_Snu = mcmc_Snu[lower_index_cutoff:]
-    mcmc_Snu_err = mcmc_Snu_err[lower_index_cutoff:]
-    flux_scale_errors = flux_scale_errors[lower_index_cutoff:]
-    flux_scale_errors_scaled = flux_scale_errors_scaled[lower_index_cutoff:]
+    # try:
+    #     lower_index_cutoff = np.where(mcmc_nu < lower_freq_cutoff)[-1][-1]
+    # except:
+    #     lower_index_cutoff = 0
 
-    return data_version, mcmc_nu, mcmc_Snu, mcmc_Snu_err, flux_scale_errors, flux_scale_errors_scaled
+    # print(lower_index_cutoff)
+    # mcmc_nu = mcmc_nu[lower_index_cutoff:]
+    # mcmc_Snu = mcmc_Snu[lower_index_cutoff:]
+    # mcmc_Snu_err = mcmc_Snu_err[lower_index_cutoff:]
+    # flux_scale_errors = flux_scale_errors[lower_index_cutoff:]
+    # flux_scale_errors_scaled = flux_scale_errors_scaled[lower_index_cutoff:]
+
+
+    # return data_version, mcmc_nu, mcmc_Snu, mcmc_Snu_err, flux_scale_errors, flux_scale_errors_scaled
+    return data_version, mcmc_nu, mcmc_Snu, total_flux_error, flux_scale_errors, flux_scale_errors_scaled
 
 
 
@@ -225,19 +241,33 @@ def integrand(r, T0, v, v_0, beta, Sigma_function):
     return Bv_scaled_to_au * (1 - np.exp(-tau)) * 2 * pi * r
 
 # Define Sigma(r) as a simple function of r (e.g., power law or exponential decay)
-def Sigma_function(r, tau0, A1=3, sigma1=15, A2=.2, r_bump=100, sigma2=8):
-    gaussian1 = A1 * np.exp(-r**2 / (2 * sigma1**2))
-    gaussian2 = A2 * np.exp(-(r - r_bump)**2 / (2 * sigma2**2))
-    baseline = 10**(-2)
+def Sigma_function(r, tau0, disk):
 
-    full = gaussian1 + gaussian2 + baseline
+    rings = {
+        'MWC480':[(0, 20, 1), (100,13,.2)],
+        'DLTau': [(0, 18, 1), (46,8, .2), (78,5,.15), (112,20,.1)],
+        'RYTau': [(20, 12.5, 1), (50, 10, .5)],
+        'GMAur': [(40,10, 1),(85, 7.5,.5)],
+        'FTTau': [(0,12,1),(32,8,.4)],
+        'CITau': [(0,5,1), (28,10,.45),(60,15,.25),(100,10,.05), (150,20,.05)],
+        'DRTau': [(0,10,1), (25,5,.3),(45,10,.2)], 
+        'LkCa15': [(40,10,.2),(70,10,1),(100,10,.6),(120,30,.15)]
+    }
 
-    return full * tau0
+
+    disk_rings = rings[disk]
+    ring_model = 0
+
+    for rind_data in disk_rings:
+
+        ring_model += rind_data[2] * np.exp(-(r - rind_data[0])**2 / (2 * rind_data[1]**2))
+
+    return ring_model * tau0
 
 # Main function to compute S_v
-def S_v(i, d, R, T0, v, v_0, beta, tau0, Sigma_function, num_points=1000):
+def S_v(i, d, R, T0, v, v_0, beta, tau0, Sigma_function, disk, num_points=1000):
 
-    sigma_func = lambda r: Sigma_function(r, tau0)
+    sigma_func = lambda r: Sigma_function(r, tau0,disk)
     integrand_func = lambda r: integrand(r, T0, v, v_0, beta, sigma_func)
     
     # Use quad for integration over r from 0 to R
@@ -249,7 +279,7 @@ def S_v(i, d, R, T0, v, v_0, beta, tau0, Sigma_function, num_points=1000):
 
 
 
-def model_wrapper(T=80, beta=1.4, Tau0= 1, vs = np.linspace(10, 5*999, int((1000-1)/0.99))):
+def model_wrapper(T=80, beta=1.4, Tau0= 1, disk='MWC480', vs = np.linspace(10, 5*999, int((1000-1)/0.99))):
 
     # convert to hz
     vs = vs * 10**9
@@ -273,7 +303,7 @@ def model_wrapper(T=80, beta=1.4, Tau0= 1, vs = np.linspace(10, 5*999, int((1000
     for v in vs:
     
         # Compute S_v
-        S_v_value = S_v(i, d, R, T0, v, v_0, beta, Tau0, Sigma_function)
+        S_v_value = S_v(i, d, R, T0, v, v_0, beta, Tau0, Sigma_function, disk)
 
         ## convert to microjansky
         S_v_value = S_v_value / 10**(-32)
@@ -285,12 +315,11 @@ def model_wrapper(T=80, beta=1.4, Tau0= 1, vs = np.linspace(10, 5*999, int((1000
 
 
 ## check outputs for different parameters
-def plot_model(ax, params, vs = np.linspace(10, 5*999, int((1000-1)/0.99))):
+def plot_model(ax, params, disk, vs = np.linspace(10, 5*999, int((1000-1)/0.99))):
 
     Tau0, beta, T, logf = params
-
     
-    Sv, new_vs = model_wrapper(T=T, beta= beta, Tau0 = Tau0, vs=vs)
+    Sv, new_vs = model_wrapper(T=T, beta= beta, Tau0 = Tau0, disk=disk, vs=vs)
 
     ax.plot(vs, Sv)
 
@@ -363,7 +392,7 @@ def log_likelihood_logistic(logistic_params, v, Sv, Sv_err):
 # Define the prior: flat priors in this example
 def log_prior_logistic(logistic_params):
     chi, tot_flux, alpha_cont, alpha_dust_ceiling, alpha_dust_floor, alpha_dust_slope, alpha_dust_freq_center, log_f = logistic_params
-    if 0 < chi <= 1 and 0 < tot_flux and 2 < alpha_dust_ceiling < 5 and 0 < alpha_cont < 2 and 0< alpha_dust_floor < alpha_dust_ceiling and 0 > alpha_dust_slope > -0.1 and 0 < alpha_dust_freq_center < 400:
+    if 0 < chi <= 1 and 0 < tot_flux and 2 < alpha_dust_ceiling < 5 and 0 < alpha_cont < 2 and 0< alpha_dust_floor < alpha_dust_ceiling and 0 > alpha_dust_slope > -0.1 and 0 < alpha_dust_freq_center < 400 and log_f > -100:
         # Gaussian prior for alpha_dust_freq_center
         mu = 180
         sigma = 50
@@ -444,11 +473,11 @@ def log_posterior_three_component(single_contam_theta, x, y, sigma):
 
 ## with thermal model
 
-def log_likelihood_thermal(thermal_params, v, Sv, Sv_err):
+def log_likelihood_thermal(thermal_params, v, Sv, Sv_err, disk):
 
     cont_flux, alpha_cont, Tau0, beta0, T0, log_f = thermal_params
 
-    dust_termal_model, model_vs = model_wrapper(T=T0,beta=beta0, Tau0 = Tau0, vs = v)
+    dust_termal_model, model_vs = model_wrapper(T=T0,beta=beta0, Tau0 = Tau0, disk=disk, vs = v)
 
     model = dust_termal_model + cont_flux*(v/33)**alpha_cont
 
@@ -461,39 +490,41 @@ def log_likelihood_thermal(thermal_params, v, Sv, Sv_err):
 # Define the prior: flat priors in this example
 def log_prior_thermal(thermal_params):
     cont_flux, alpha_cont, Tau0, beta0, T0, log_f = thermal_params 
-    if 0 < cont_flux and 0 < alpha_cont < 2 and 0 < Tau0 < 2 and 0 < beta0  < 2 and 10 < T0 < 200 and -50 < log_f < 50:
+    if 0 < cont_flux and 0 < alpha_cont < 3 and 0 < Tau0 < 1 and 0 < beta0  < 3 and 1 < T0 < 100 and -50 < log_f < 50:
         # Gaussian prior for some parameters
-        mu = 400
-        sigma = 100
-        gaussian_prior_cont_flux = -0.5 * ((cont_flux - mu) / sigma) ** 2
+        # mu = 500
+        # sigma = 500
+        # gaussian_prior_cont_flux = -0.5 * ((cont_flux - mu) / sigma) ** 2
 
-        mu = .6
-        sigma = .3
-        gaussian_prior_alpha_cont = -0.5 * ((alpha_cont - mu) / sigma) ** 2
+        # mu = 1
+        # sigma = .3
+        # gaussian_prior_alpha_cont = -0.5 * ((alpha_cont - mu) / sigma) ** 2
 
-        mu = .2
-        sigma = .05
-        gaussian_prior_tau0 = -0.5 * ((Tau0 - mu) / sigma) ** 2
+        # mu = .2
+        # sigma = .1
+        # gaussian_prior_tau0 = -0.5 * ((Tau0 - mu) / sigma) ** 2
 
-        mu = 1.4
-        sigma = .2
-        gaussian_prior_beta = -0.5 * ((beta0 - mu) / sigma) ** 2
+        # mu = 1.5
+        # sigma = .5
+        # gaussian_prior_beta = -0.5 * ((beta0 - mu) / sigma) ** 2
 
-        mu = 60
-        sigma = 20
-        gaussian_prior_T0 = -0.5 * ((T0 - mu) / sigma) ** 2
+        # mu = 30
+        # sigma = 30
+        # gaussian_prior_T0 = -0.5 * ((T0 - mu) / sigma) ** 2
 
-        return gaussian_prior_cont_flux + gaussian_prior_alpha_cont + gaussian_prior_tau0 + gaussian_prior_beta + gaussian_prior_T0
+        # return gaussian_prior_cont_flux + gaussian_prior_alpha_cont + gaussian_prior_tau0 + gaussian_prior_beta + gaussian_prior_T0
+
+        return 0
 
     return -np.inf  # Outside the bounds
 
 
 # Define the posterior probability function (log-posterior)
-def log_posterior_thermal_model(thermal_params, x, y, sigma):
+def log_posterior_thermal_model(thermal_params, x, y, sigma, disk):
     lp = log_prior_thermal(thermal_params)
     if not np.isfinite(lp):
         return -np.inf
-    return lp + log_likelihood_thermal(thermal_params, x, y, sigma)
+    return lp + log_likelihood_thermal(thermal_params, x, y, sigma, disk)
 
 
 def check_convergence(sampler, threshold=50, discard=100):
@@ -553,7 +584,23 @@ def run_mcmc(ndim, nu, Snu, Snu_err,nsteps=100000,walkers_scaling=20,scaling=33,
     if ndim == 6:
         print("Running a Thermal Model")
         labels = ['cont_flux', 'alpha_cont', 'Tau0', 'beta0', 'T0', 'log_f']
-        initial_guess = np.array([400, .6, 0.2, 1.4, 60, -2])
+
+        if disk == 'RYTau':
+            initial_guess = np.array([950, .7, 0.4, 1.2, 33, -2])
+        if disk == 'GMAur':
+            initial_guess = np.array([200, .8, 0.17, 1.4, 36, -2])
+        if disk == 'DLTau':
+            initial_guess = np.array([300, 1.2, 0.3, 1.4, 25, -23])
+        if disk == 'LkCa15':
+            initial_guess = np.array([100, 1.2, 0.05, 1.4, 30, -23])
+        if disk == 'FTTau':
+            initial_guess = np.array([300, 1.2, 0.3, 1.4, 25, -23])
+        if disk == 'CITau':
+            initial_guess = np.array([300, 1.2, 0.15, 1.4, 25, -23])
+        if disk == 'DRTau':
+            initial_guess = np.array([280, 1.4, 0.2, 1.4, 30, -23])
+        else:
+            initial_guess = np.array([400, .6, 0.2, 1.4, 60, -2])
 
 
     initial_position = initial_guess + 0.1 * np.random.randn(nwalkers, ndim) * initial_guess
@@ -570,7 +617,7 @@ def run_mcmc(ndim, nu, Snu, Snu_err,nsteps=100000,walkers_scaling=20,scaling=33,
     if ndim == 8:
         sampler = emcee.EnsembleSampler(nwalkers, ndim, log_posterior_logistic, args=(norm_nu_vis, Snu, Snu_err))
     if ndim == 6:
-        sampler = emcee.EnsembleSampler(nwalkers, ndim, log_posterior_thermal_model, args=(norm_nu_vis, Snu, Snu_err))
+        sampler = emcee.EnsembleSampler(nwalkers, ndim, log_posterior_thermal_model, args=(norm_nu_vis, Snu, Snu_err, disk))
 
     # Run the MCMC
     sampler.run_mcmc(initial_position, int(nsteps/2), progress=True)
@@ -599,7 +646,6 @@ def run_mcmc(ndim, nu, Snu, Snu_err,nsteps=100000,walkers_scaling=20,scaling=33,
 
     # Step 6: Restart the emcee sampler with the filtered walkers as the new starting positions
     nwalkers_filtered, ndim = filtered_walkers.shape
-    
 
     if ndim == 5:
         sampler = emcee.EnsembleSampler(nwalkers_filtered, ndim, log_posterior_two_component, args=(norm_nu_vis, Snu, Snu_err),a=2.5)
@@ -608,12 +654,13 @@ def run_mcmc(ndim, nu, Snu, Snu_err,nsteps=100000,walkers_scaling=20,scaling=33,
     if ndim == 8:
         sampler = emcee.EnsembleSampler(nwalkers_filtered, ndim, log_posterior_logistic, args=(norm_nu_vis, Snu, Snu_err),a=2.5)
     if ndim == 6:
-        sampler = emcee.EnsembleSampler(nwalkers_filtered, ndim, log_posterior_thermal_model, args=(norm_nu_vis, Snu, Snu_err))
+        sampler = emcee.EnsembleSampler(nwalkers_filtered, ndim, log_posterior_thermal_model, args=(norm_nu_vis, Snu, Snu_err, disk), a=2.5)
 
 
     sampler.run_mcmc(filtered_walkers, nsteps, progress=True)
 
     samples = sampler.get_chain(thin=15, flat=True)
+    
 
 
     params = []
@@ -634,8 +681,8 @@ def run_mcmc(ndim, nu, Snu, Snu_err,nsteps=100000,walkers_scaling=20,scaling=33,
     if plot:
 
         chains_fig = plot_chains(sampler,labels,ndim)
-        chains_fig.save_fig(f'{disk}_chains_fig_{model_type}_{nwalkers}_walkers.png')
-        chains_fig.close()
+        chains_fig.savefig(f'{disk}_chains_fig_{model_type}_{nwalkers}_walkers.png')
+
     # Assuming `samples` is your MCMC chain samples (shape: nsteps, nwalkers, ndim)
         flat_samples = samples.reshape((-1, ndim))  # Flatten if using an MCMC sampler like emcee
 
@@ -654,18 +701,17 @@ def run_mcmc(ndim, nu, Snu, Snu_err,nsteps=100000,walkers_scaling=20,scaling=33,
         corner_labels = ["$\\chi$", "$S_{cm}$", "$\\alpha^d$", "$\\alpha^c$"] if ndim == 4 else labels
         corner_fig = corner.corner(filtered_samples, labels=corner_labels, show_titles=True)
 
-        corner_fig.save_fig(f'{disk}_corner_fig_{model_type}_{nwalkers}_walkers.png')
-        corner_fig.close()
+        corner_fig.savefig(f'{disk}_corner_fig_{model_type}_{nwalkers}_walkers.png')
 
+        plt.close('all')
         return samples, sampler, params, norm_nu_vis, labels, chains_fig, corner_fig
 
     else:
         return samples, sampler, params, norm_nu_vis, labels
     
 
-def main(ndim, disk):
+def main(ndim, disk, nsteps):
 
-    ndim = 6
     scaling = 33
     archival = False
 
@@ -681,14 +727,28 @@ def main(ndim, disk):
 
     print(model_type)
 
-    data_version, mcmc_nu, mcmc_Snu, mcmc_Snu_err, flux_scale_errors, flux_scale_errors_scaled = get_data_version('vis', archival, 0, 4, 0, disk=disk)
 
- 
-    samples, sampler, params, norm_nu_vis, labels, chains_fig, corner_fig = run_mcmc(ndim, mcmc_nu,mcmc_Snu,mcmc_Snu_err,1000,16,scaling, plot=True, disk=disk, model_type=model_type)
+    # get the correct upper limit for 
 
-    
+    data_version, mcmc_nu, mcmc_Snu, mcmc_Snu_err, flux_scale_errors, flux_scale_errors_scaled = get_data_version('vis', archival, 0, 4, 1000, disk=disk)
+
+    ## rescale if doing a logistic fit to milli jansky
+    # if ndim == 8:
+    #     mcmc_Snu *= 10e-3
+    #     mcmc_Snu_err *= 10e-3
+
+    # nsteps = 500
+    samples, sampler, params, norm_nu_vis, labels, chains_fig, corner_fig = run_mcmc(ndim, mcmc_nu,mcmc_Snu,mcmc_Snu_err,nsteps,16,scaling, plot=True, disk=disk, model_type=model_type)
+
+
+    np.save(f'{disk}_corner_fig_{model_type}_{nsteps}_steps_samples.npy', samples)
+    np.save(f'{disk}_corner_fig_{model_type}_{nsteps}_steps_params.npy', params)
+
+    print('Model fit completed and saved.')
+
 
 if __name__ == '__main__':
-    ndim = sys.argv[1]
+    ndim = int(sys.argv[1])
     disk = sys.argv[2]
-    main(ndim)
+    nsteps = int(sys.argv[3])
+    main(ndim, disk, nsteps)
