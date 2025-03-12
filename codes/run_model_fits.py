@@ -37,7 +37,7 @@ def get_data_version(file_type, archive,file_number,non_vla_freq_index_cutoff,up
     # non-VLA archival
     # non-VLA archival
     if disk == 'MWC480':
-        non_vla = ascii.read(dir_name+'/MWC480.spec.txt')  
+        non_vla = ascii.read(dir_name+'/MWC480.SED.txt')  
     else:
         non_vla = ascii.read(dir_name+f'/{disk}.SED.txt')  
 
@@ -392,7 +392,7 @@ def log_likelihood_logistic(logistic_params, v, Sv, Sv_err):
 # Define the prior: flat priors in this example
 def log_prior_logistic(logistic_params):
     chi, tot_flux, alpha_cont, alpha_dust_ceiling, alpha_dust_floor, alpha_dust_slope, alpha_dust_freq_center, log_f = logistic_params
-    if 0 < chi <= 1 and 0 < tot_flux and 2 < alpha_dust_ceiling < 5 and 0 < alpha_cont < 2 and 0< alpha_dust_floor < alpha_dust_ceiling and 0 > alpha_dust_slope > -0.1 and 0 < alpha_dust_freq_center < 400 and log_f > -100:
+    if 0 < chi <= 1 and 0 < tot_flux and 2 < alpha_dust_ceiling < 5 and 0 < alpha_cont < 3 and 0< alpha_dust_floor < alpha_dust_ceiling and 0 > alpha_dust_slope > -0.1 and 0 < alpha_dust_freq_center < 400 and log_f > -100:
         # Gaussian prior for alpha_dust_freq_center
         mu = 180
         sigma = 50
